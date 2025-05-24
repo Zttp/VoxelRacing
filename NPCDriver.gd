@@ -1,67 +1,74 @@
 extends VehicleBody3D
 
+# Настройки движения
 @export var target_path: PathFollow3D
-@export var speed: float = 10.0
-@export var max_steering_angle: float = 0.5
-@export var braking_distance: float = 5.0
-@export var path_offset_speed: float = 1.0
+@export var max_speed: float = 15.0
+@export var acceleration: float = 5.0
+@export var max_steering: float = 0.8
+@export var braking_distance: float = 8.0
+@export var path_update_rate: float = 0.1
 
+# Системные переменные
+var current_speed: float = 0.0
+var path_update_timer: float = 0.0
+var target_position: Vector3 = Vector3.ZERO
 var is_active: bool = true
-var safe_direction: Vector3 = Vector3.FORWARD
 
 func _ready():
-    # Инициализация начального направления
-    safe_direction = -global_transform.basis.z
+    # Инициализация при старте
+    if target_path:
+        target_position = target_path.global_position
+    engine_force = 0
+    brake = 1.0 # Начинаем с зажатого тормоза
 
 func _physics_process(delta):
-    if !is_active or !target_path or !target_path.get_parent() is Path3D:
-        engine_force = 0
+    if !is_active or !target_path:
+        brake = 1.0
         return
     
-    # Плавное движение по пути
-    target_path.progress += path_offset_speed * delta
+    # Обновление цели с заданной частотой
+    path_update_timer -= delta
+    if path_update_timer <= 0:
+        update_target_position()
+        path_update_timer = path_update_rate
     
-    var target_pos = target_path.global_transform.origin
-    var direction = target_pos - global_transform.origin
-    
-    # Полная защита от нулевого вектора
-    if direction.length_squared() < 0.01:
-        engine_force = 0
-        steering = 0
+    # Расчет направления
+    var direction = target_position - global_position
+    if direction.length() < 0.1:
+        brake = 1.0
         return
     
     direction = direction.normalized()
     
-    # Альтернативный расчет угла без использования angle_to
+    # Расчет поворота
     var forward = -global_transform.basis.z
-    var cross = forward.cross(direction)
-    var angle_to_target = atan2(cross.length(), forward.dot(direction)) * sign(cross.y)
+    var angle = forward.signed_angle_to(direction, Vector3.UP)
     
-    # Подавление NaN/Inf
-    if is_nan(angle_to_target) or is_inf(angle_to_target):
-        angle_to_target = 0.0
-        direction = safe_direction
-    else:
-        safe_direction = direction
+    # Управление рулем
+    steering = clamp(angle * 2.0, -max_steering, max_steering)
     
-    # Плавный поворот с ограничением
-    steering = move_toward(
-        steering,
-        clamp(angle_to_target * 2.0, -max_steering_angle, max_steering_angle),
-        delta * 2.0
-    )
+    # Управление скоростью
+    var distance = global_position.distance_to(target_position)
+    var target_speed = max_speed * min(1.0, distance / braking_distance)
     
-    # Адаптивное ускорение/торможение
-    var distance = global_transform.origin.distance_to(target_pos)
-    engine_force = speed * smoothstep(0.0, braking_distance, distance)
+    current_speed = lerp(current_speed, target_speed, acceleration * delta)
+    engine_force = current_speed * 100.0
+    brake = 0.0
 
-# Плавная интерполяция (аналог smoothstep в Godot)
-func smoothstep(edge0: float, edge1: float, x: float) -> float:
-    x = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0)
-    return x * x * (3.0 - 2.0 * x)
+func update_target_position():
+    if !target_path:
+        return
+    
+    # Двигаемся по пути
+    target_path.progress += 1.0
+    target_position = target_path.global_position
+    
+    # Визуализация цели (для отладки)
+    DebugDraw3D.draw_sphere(target_position, 0.5, Color.RED, 1.0)
 
 func set_active(state: bool):
     is_active = state
     if !state:
         engine_force = 0
+        brake = 1.0
         steering = 0
